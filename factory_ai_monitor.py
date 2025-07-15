@@ -1,37 +1,61 @@
+"""
+This script creates a Streamlit web application for monitoring sensor data in a factory.
+
+It uses a local instance of the Qwen1.5-1.8B-Chat model to analyze sensor data,
+detect anomalies, and provide explanations and recommendations in both Chinese and
+English.
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# ========== 1. 加载本地小模型 Qwen1.5-1.8B-Chat ==========
+# ========== 1. Load Local LLM ==========
 @st.cache_resource
-def load_local_LLM():
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+def load_local_llm() -> tuple[AutoTokenizer, AutoModelForCausalLM]:
+    """
+    Loads the local Qwen1.5-1.8B-Chat model and tokenizer.
+
+    Returns:
+        A tuple containing the tokenizer and the model.
+    """
     model_name = "Qwen/Qwen1.5-1.8B-Chat"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True)
     return tokenizer, model
 
-tokenizer, model = load_local_LLM()
+tokenizer, model = load_local_llm()
 
-# ========== 2. 语言切换 ==========
+# ========== 2. Language Selection ==========
 lang = st.sidebar.radio("选择语言 / Select Language", ["中文", "English"])
 
-# ========== 3. 传感器数据模拟 ==========
+# ========== 3. Sensor Data Simulation ==========
 @st.cache_data
-def generate_sensor_data(n=100, random_seed=42):
+def generate_sensor_data(n: int = 100, random_seed: int = 42) -> pd.DataFrame:
+    """
+    Generates a DataFrame of simulated sensor data.
+
+    Args:
+        n: The number of data points to generate.
+        random_seed: The random seed to use for data generation.
+
+    Returns:
+        A DataFrame of simulated sensor data.
+    """
     np.random.seed(random_seed)
     data = []
     for i in range(n):
         row = {
-            'timestamp': pd.Timestamp.now() + pd.Timedelta(seconds=i*2),
+            'timestamp': pd.Timestamp.now() + pd.Timedelta(seconds=i * 2),
             'temperature': np.random.normal(28, 1.5),
             'humidity': np.random.normal(55, 2),
             'vibration': np.random.normal(0.5, 0.1),
             'power': np.random.normal(110, 5),
             'pressure': np.random.normal(2.0, 0.05)
         }
-        # 随机异常
+        # Add random anomalies
         if np.random.rand() < 0.06:
             row['temperature'] += np.random.uniform(6, 12)
         if np.random.rand() < 0.05:
@@ -41,42 +65,63 @@ def generate_sensor_data(n=100, random_seed=42):
         data.append(row)
     return pd.DataFrame(data)
 
-def detect_anomalies(df, threshold=3):
-    selected = ['temperature','humidity','vibration','power','pressure']
+def detect_anomalies(df: pd.DataFrame, threshold: int = 3) -> pd.Series:
+    """
+    Detects anomalies in the sensor data.
+
+    Args:
+        df: The DataFrame of sensor data.
+        threshold: The z-score threshold for anomaly detection.
+
+    Returns:
+        A Series of booleans indicating whether each data point is an anomaly.
+    """
+    selected = ['temperature', 'humidity', 'vibration', 'power', 'pressure']
     z_scores = (df[selected] - df[selected].mean()) / df[selected].std()
     anomalies = (np.abs(z_scores) > threshold)
     return anomalies.any(axis=1)
 
-# ========== 4. 多语言异常解释 ==========
-def qwen_anomaly_explain(row, lang="中文"):
+# ========== 4. Multi-language Anomaly Explanation ==========
+def qwen_anomaly_explain(row: pd.Series, lang: str = "中文") -> str:
+    """
+    Generates an explanation for an anomaly using the local LLM.
+
+    Args:
+        row: The data point to explain.
+        lang: The language to use for the explanation.
+
+    Returns:
+        The explanation for the anomaly.
+    """
     if lang == "中文":
-        prompt = (
-            f"工厂传感器实时监控数据如下：\n"
-            f"时间：{row['timestamp']}\n"
-            f"温度：{row['temperature']:.2f}℃\n"
-            f"湿度：{row['humidity']:.2f}%\n"
-            f"振动：{row['vibration']:.2f} g\n"
-            f"功率：{row['power']:.2f} kW\n"
-            f"压力：{row['pressure']:.2f} bar\n"
-            "请用专业工业人工智能角度，判断该数据异常的潜在原因和建议措施，不少于50字。"
-        )
+        prompt = f"""
+        工厂传感器实时监控数据如下：
+        时间：{row['timestamp']}
+        温度：{row['temperature']:.2f}℃
+        湿度：{row['humidity']:.2f}%
+        振动：{row['vibration']:.2f} g
+        功率：{row['power']:.2f} kW
+        压力：{row['pressure']:.2f} bar
+        请用专业工业人工智能角度，判断该数据异常的潜在原因和建议措施，不少于50字。
+        """
     else:
-        prompt = (
-            f"Factory sensor monitoring data:\n"
-            f"Time: {row['timestamp']}\n"
-            f"Temperature: {row['temperature']:.2f}℃\n"
-            f"Humidity: {row['humidity']:.2f}%\n"
-            f"Vibration: {row['vibration']:.2f} g\n"
-            f"Power: {row['power']:.2f} kW\n"
-            f"Pressure: {row['pressure']:.2f} bar\n"
-            "As an AI expert for smart factories, please analyze the possible causes of this anomaly and provide professional suggestions (at least 50 words)."
-        )
+        prompt = f"""
+        Factory sensor monitoring data:
+        Time: {row['timestamp']}
+        Temperature: {row['temperature']:.2f}℃
+        Humidity: {row['humidity']:.2f}%
+        Vibration: {row['vibration']:.2f} g
+        Power: {row['power']:.2f} kW
+        Pressure: {row['pressure']:.2f} bar
+        As an AI expert for smart factories, please analyze the possible causes of this
+        anomaly and provide professional suggestions (at least 50 words).
+        """
     inputs = tokenizer(prompt, return_tensors="pt")
     outputs = model.generate(**inputs, max_new_tokens=128)
     result = tokenizer.decode(outputs[0], skip_special_tokens=True)
     return result.replace(prompt, "").strip()
 
-# ========== 5. 多语言UI提示 ==========
+# ========== 5. Multi-language UI ==========
 if lang == "中文":
     st.title("AI驱动的涡流纺精密控制仿真系统 (AI-Driven Precision Control in Vortex Spinning)")
     st.markdown("### 智能工厂本地大模型异常监控仿真系统")
@@ -90,7 +135,11 @@ if lang == "中文":
 else:
     st.title("AI-Driven Precision Control in Vortex Spinning")
     st.markdown("### Smart Factory Local LLM Anomaly Monitoring Demo")
-    st.write("This system simulates real-time sensor data from a textile factory, detects anomalies, and uses a local LLM for AI-driven explanations and recommendations.")
+    st.write(
+        "This system simulates real-time sensor data from a textile factory, "
+        "detects anomalies, and uses a local LLM for AI-driven explanations "
+        "and recommendations."
+    )
     st.sidebar.header("Simulation Settings")
     data_expander_label = "All Sensor Data"
     anomaly_title = "Detected Anomalies (Click Button for LLM Explanation)"
@@ -98,35 +147,53 @@ else:
     btn_label = "AI Analyze Anomaly with Local LLM"
     running_msg = "Running local LLM inference..."
 
-# ========== 6. 主流程 ==========
-num_points = st.sidebar.slider("传感器采样点数 / Sensor Points", 50, 200, 60)
-seed = st.sidebar.number_input("随机种子 / Random Seed", 1, 99999, 42)
+# ========== 6. Main ==========
+def main():
+    """
+    The main function of the Streamlit application.
+    """
+    num_points = st.sidebar.slider("传感器采样点数 / Sensor Points", 50, 200, 60)
+    seed = st.sidebar.number_input("随机种子 / Random Seed", 1, 99999, 42)
 
-with st.spinner("正在生成传感器数据并检测异常..." if lang == "中文" else "Generating sensor data and detecting anomalies..."):
-    df = generate_sensor_data(num_points, seed)
-    df['is_anomaly'] = detect_anomalies(df)
-    anomaly_df = df[df['is_anomaly']]
+    with st.spinner("正在生成传感器数据并检测异常..." if lang == "中文" else "Generating sensor data and detecting anomalies..."):
+        df = generate_sensor_data(num_points, seed)
+        df['is_anomaly'] = detect_anomalies(df)
+        anomaly_df = df[df['is_anomaly']]
 
-st.subheader("传感器趋势 (温度、功率、振动)" if lang == "中文" else "Sensor Trends (Temperature, Power, Vibration)")
-fig, ax = plt.subplots()
-df.set_index('timestamp')[['temperature', 'power', 'vibration']].plot(ax=ax)
-st.pyplot(fig)
+    st.subheader("传感器趋势 (温度、功率、振动)" if lang == "中文" else "Sensor Trends (Temperature, Power, Vibration)")
+    fig, ax = plt.subplots()
+    df.set_index('timestamp')[['temperature', 'power', 'vibration']].plot(ax=ax)
+    st.pyplot(fig)
 
-with st.expander(data_expander_label):
-    st.dataframe(df, use_container_width=True)
+    with st.expander(data_expander_label):
+        st.dataframe(df, use_container_width=True)
 
-st.subheader(anomaly_title)
-if not anomaly_df.empty:
-    for i, row in anomaly_df.iterrows():
-        with st.expander(f"[{row['timestamp']}] 异常 - 温度: {row['temperature']:.1f}℃  振动: {row['vibration']:.2f}g  功率: {row['power']:.2f}kW" if lang=="中文"
-                         else f"[{row['timestamp']}] Anomaly - Temperature: {row['temperature']:.1f}℃  Vibration: {row['vibration']:.2f}g  Power: {row['power']:.2f}kW"):
-            st.write(f"湿度: {row['humidity']:.2f}% | 压力: {row['pressure']:.2f} bar" if lang=="中文"
-                     else f"Humidity: {row['humidity']:.2f}% | Pressure: {row['pressure']:.2f} bar")
-            if st.button(f"{btn_label} ({i+1})", key=f"ai_explain_{i}"):
-                with st.spinner(running_msg):
-                    explanation = qwen_anomaly_explain(row, lang=lang)
-                st.success(explanation)
-else:
-    st.info(no_anomaly_info)
+    st.subheader(anomaly_title)
+    if not anomaly_df.empty:
+        for i, row in anomaly_df.iterrows():
+            expander_title = (
+                f"[{row['timestamp']}] 异常 - 温度: {row['temperature']:.1f}℃  "
+                f"振动: {row['vibration']:.2f}g  功率: {row['power']:.2f}kW"
+                if lang == "中文"
+                else (
+                    f"[{row['timestamp']}] Anomaly - Temperature: {row['temperature']:.1f}℃  "
+                    f"Vibration: {row['vibration']:.2f}g  Power: {row['power']:.2f}kW"
+                )
+            )
+            with st.expander(expander_title):
+                st.write(
+                    f"湿度: {row['humidity']:.2f}% | 压力: {row['pressure']:.2f} bar"
+                    if lang == "中文"
+                    else f"Humidity: {row['humidity']:.2f}% | Pressure: {row['pressure']:.2f} bar"
+                )
+                if st.button(f"{btn_label} ({i+1})", key=f"ai_explain_{i}"):
+                    with st.spinner(running_msg):
+                        explanation = qwen_anomaly_explain(row, lang=lang)
+                    st.success(explanation)
+    else:
+        st.info(no_anomaly_info)
 
-st.caption("© Liao Hu + HuggingFace Transformers | Qwen1.5-1.8B-Chat本地模型 Demo")
+    st.caption("© Liao Hu + HuggingFace Transformers | Qwen1.5-1.8B-Chat本地模型 Demo")
+
+if __name__ == "__main__":
+    main()
